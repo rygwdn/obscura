@@ -5849,7 +5849,7 @@ mod tests {
             globalThis.__wsClose = null;
             const socket = new WebSocket({url});
             socket.binaryType = 'arraybuffer';
-            socket.addEventListener('open', () => { socket.send('hello'); socket.send(new Uint8Array([4, 5])); });
+            socket.addEventListener('open', () => {{ socket.send('hello'); socket.send(new Uint8Array([4, 5])); }});
             socket.addEventListener('message', event => __wsMessages.push(
                 typeof event.data === 'string' ? event.data : Array.from(new Uint8Array(event.data))
             ));

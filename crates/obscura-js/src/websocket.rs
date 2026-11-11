@@ -152,8 +152,9 @@ async fn connect_task(
         let target = addresses[0];
         let stream = tokio::time::timeout(CONNECT_TIMEOUT, dial_stream(target, proxy_url.as_deref())).await
             .map_err(|_| "WebSocket proxy tunnel timed out".to_string())??;
-        let mut request = tungstenite::http::Request::builder().uri(url.as_str());
-        let headers = request.headers_mut().ok_or_else(|| "invalid WebSocket request".to_string())?;
+        use tungstenite::client::IntoClientRequest;
+        let mut request = url.as_str().into_client_request().map_err(|error| format!("invalid WebSocket request: {error}"))?;
+        let headers = request.headers_mut();
         let set_header = |headers: &mut tungstenite::http::HeaderMap, name: &str, value: &str| -> Result<(), String> {
             if !value.is_empty() {
                 headers.insert(tungstenite::http::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| e.to_string())?,
@@ -170,7 +171,6 @@ async fn connect_task(
             if matches!(name.to_ascii_lowercase().as_str(), "host" | "upgrade" | "connection" | "sec-websocket-key" | "sec-websocket-version" | "sec-websocket-protocol" | "origin" | "cookie") { continue; }
             set_header(headers, &name, &value)?;
         }
-        let request = request.body(()).map_err(|error| format!("invalid WebSocket request: {error}"))?;
         let (mut socket, response) = tokio::time::timeout(CONNECT_TIMEOUT,
             tokio_tungstenite::client_async_tls_with_config(request, stream, None, None))
             .await.map_err(|_| "WebSocket handshake timed out".to_string())?
