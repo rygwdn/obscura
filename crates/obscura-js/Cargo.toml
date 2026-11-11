@@ -38,6 +38,7 @@ reqwest = { workspace = true }
 html5ever = { workspace = true }
 deno_error = "0.7"
 tokio-socks = { workspace = true }
+tokio-tungstenite = { workspace = true }
 futures-util = "0.3"
 base64 = { workspace = true }
 sha1 = "0.10"

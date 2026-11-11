@@ -100,11 +100,10 @@ async fn dial_stream(target: std::net::SocketAddr, proxy: Option<&str>) -> Resul
             let authority = target.to_string();
             stream.write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes()).await
                 .map_err(|error| format!("HTTP proxy CONNECT failed: {error}"))?;
-            let (mut read, mut write) = stream.into_split();
             let mut response = Vec::new();
             let mut byte = [0u8; 1];
             loop {
-                let count = read.read(&mut byte).await.map_err(|error| format!("HTTP proxy CONNECT failed: {error}"))?;
+                let count = stream.read(&mut byte).await.map_err(|error| format!("HTTP proxy CONNECT failed: {error}"))?;
                 if count == 0 { return Err("HTTP proxy closed the CONNECT tunnel".to_string()); }
                 response.push(byte[0]);
                 if response.ends_with(b"\r\n\r\n") { break; }
@@ -112,7 +111,7 @@ async fn dial_stream(target: std::net::SocketAddr, proxy: Option<&str>) -> Resul
             }
             let status = response.split(|byte| *byte == b' ').nth(1).unwrap_or_default();
             if status != b"200" { return Err(format!("HTTP proxy CONNECT refused (status {})", String::from_utf8_lossy(status))); }
-            Ok(read.unsplit(write))
+            Ok(stream)
         }
         Some(proxy) => Err(format!("Unsupported WebSocket proxy scheme in '{proxy}'")),
     }
@@ -305,5 +304,5 @@ pub(crate) fn op_ws_close(state: &OpState, id: u32, code: u16, #[string] reason:
     let owner = state.borrow::<Rc<RefCell<crate::ops::ObscuraState>>>().clone();
     if let Some(socket) = owner.borrow().ws_registry.sockets.get(&id) {
         let _ = socket.outbound.send(Outbound::Close(code, reason.to_string()));
-    }
+    };
 }
