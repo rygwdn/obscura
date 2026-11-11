@@ -5802,6 +5802,70 @@ mod tests {
         rt
     }
 
+    #[tokio::test]
+    async fn page_websocket_exchanges_text_and_binary_frames() {
+        use futures_util::{SinkExt, StreamExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let text = socket.next().await.unwrap().unwrap();
+            assert_eq!(text.into_text().unwrap().to_string(), "hello");
+            let binary = socket.next().await.unwrap().unwrap();
+            assert_eq!(binary.into_data().as_ref(), &[4, 5]);
+            socket.send(tokio_tungstenite::tungstenite::Message::Text("reply".into())).await.unwrap();
+            socket.send(tokio_tungstenite::tungstenite::Message::Binary(vec![1, 2, 3].into())).await.unwrap();
+            socket.close(None).await.unwrap();
+        });
+        let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = proxy_listener.local_addr().unwrap();
+        let upstream_address = address;
+        let proxy = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut downstream, _) = proxy_listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                downstream.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+            }
+            assert!(String::from_utf8_lossy(&request).starts_with(&format!("CONNECT {upstream_address} ")));
+            let mut upstream = tokio::net::TcpStream::connect(upstream_address).await.unwrap();
+            downstream.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await.unwrap();
+            tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await.unwrap();
+        });
+        let mut rt = setup_runtime("<html><body></body></html>");
+        rt.state.borrow_mut().http_client = Some(std::sync::Arc::new(
+            obscura_net::ObscuraHttpClient::with_full_options(
+                std::sync::Arc::new(obscura_net::CookieJar::new()),
+                Some(&format!("http://{proxy_address}")),
+                true,
+            ),
+        ));
+        let url = serde_json::to_string(&format!("ws://{address}/socket")).unwrap();
+        rt.evaluate(&format!(r#"(() => {{
+            globalThis.__wsMessages = [];
+            globalThis.__wsClose = null;
+            const socket = new WebSocket({url});
+            socket.binaryType = 'arraybuffer';
+            socket.addEventListener('open', () => {{ socket.send('hello'); socket.send(new Uint8Array([4, 5])); }});
+            socket.addEventListener('message', event => __wsMessages.push(
+                typeof event.data === 'string' ? event.data : Array.from(new Uint8Array(event.data))
+            ));
+            socket.addEventListener('close', event => __wsClose = [event.code, event.wasClean]);
+        }})()"#)).unwrap();
+        rt.run_event_loop_bounded(2_000).await.unwrap();
+        server.await.unwrap();
+        proxy.await.unwrap();
+        assert_eq!(rt.evaluate("__wsMessages").unwrap(), serde_json::json!(["reply", [1, 2, 3]]));
+        assert_eq!(rt.evaluate("__wsClose").unwrap(), serde_json::json!([1005, true]));
+        assert_eq!(rt.evaluate(r#"(() => {
+            try { new WebSocket('ftp://example.com'); return false; }
+            catch (error) { return error.name === 'SyntaxError'; }
+        })()"#).unwrap(), serde_json::json!(true));
+    }
+
     #[cfg(feature = "render")]
     #[test]
     fn static_accessibility_visibility_does_not_allocate_geometry() {

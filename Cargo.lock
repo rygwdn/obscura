@@ -2101,6 +2101,7 @@ dependencies = [
  "ctr",
  "deno_core",
  "deno_error",
+ "futures-util",
  "getrandom 0.2.17",
  "hkdf",
  "hmac",
@@ -2117,6 +2118,8 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-socks",
+ "tokio-tungstenite",
  "tracing",
  "url",
 ]
@@ -3648,8 +3651,12 @@ checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -3809,6 +3816,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.4",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.18",
  "utf-8",

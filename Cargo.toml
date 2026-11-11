@@ -42,7 +42,8 @@ tiny-skia = "0.12"
 # Pure-Rust glyph rasterizer for the render layer's text step.
 ab_glyph = "0.2"
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.26"
+tokio-socks = "0.5"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 # No "cookies" feature: obscura manages cookies through its own CookieJar
 # (obscura-net/src/cookies.rs) and never uses reqwest's cookie store. Pulling
 # it in only added the cookie/cookie_store crates, and cookie 0.18.1's blanket

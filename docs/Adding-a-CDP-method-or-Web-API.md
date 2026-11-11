@@ -171,4 +171,4 @@ cargo build --release -p obscura-cli --bins --features render
 - CDP method with intercept: `crates/obscura-cdp/src/domains/page.rs` `do_navigate`.
 - Web API with op + JS shim: `crypto.subtle.digest` (above).
 - Web API in pure JS (no op): `DOMParser` in `bootstrap.js`.
-- Web API with async event firing: `WebSocket`, `IntersectionObserver` in `bootstrap.js`.
+- Web API with async event firing: `IntersectionObserver` in `bootstrap.js`; WebSocket uses the `bootstrap.js` shim and `crates/obscura-js/src/websocket.rs` ops/transport, with target DNS checked and pinned before direct or proxy tunnel connections.
