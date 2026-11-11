@@ -18626,13 +18626,6 @@ if (typeof FileReader === 'undefined') {
   Object.assign(globalThis.FileReader.prototype, { EMPTY: 0, LOADING: 1, DONE: 2 });
 }
 
-// Real network sockets aren't implemented; we don't have a runtime WS / SSE
-// client in V8. But pages that wait for an `open` event (Vite HMR clients
-// embedded on docs sites, live-dashboards, anything calling
-// `await new Promise(r => ws.addEventListener('open', r))`) silently hang
-// forever otherwise. Fire `open` after a microtask so the consumer at least
-// proceeds; subsequent messages never arrive, which is no worse than the
-// current "no signal whatsoever" behaviour.
 // Minimal EventTarget shared by socket-like classes. Real `EventTarget` is
 // currently aliased to `Node`, which would drag DOM-tree assumptions into a
 // `WebSocket`. Defining a private shim avoids that.
@@ -18684,37 +18677,156 @@ if (typeof EventSource === 'undefined') {
 if (typeof WebSocket === 'undefined') {
   globalThis.WebSocket = class WebSocket {
     constructor(url, protocols) {
-      // Validate URL scheme per spec: Chrome throws SyntaxError for non-ws/wss URLs
-      if (typeof url !== 'string' || !/^wss?:\/\//i.test(url)) {
-        throw new DOMException(
-          "Failed to construct 'WebSocket': The URL '" + url + "' is invalid.",
-          'SyntaxError'
-        );
+      if (arguments.length === 0) throw new TypeError("Failed to construct 'WebSocket': 1 argument required.");
+      let parsed;
+      try { parsed = new URL(url, globalThis.location?.href); }
+      catch (_) { throw new DOMException("Failed to construct 'WebSocket': The URL is invalid.", 'SyntaxError'); }
+      if (parsed.protocol === 'http:') parsed.protocol = 'ws:';
+      else if (parsed.protocol === 'https:') parsed.protocol = 'wss:';
+      if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+        throw new DOMException("Failed to construct 'WebSocket': The URL's scheme must be ws or wss.", 'SyntaxError');
       }
-      this.url = url;
-      this.readyState = 0; // CONNECTING
+      if (parsed.hash || parsed.username || parsed.password) throw new DOMException("Failed to construct 'WebSocket': URL fragments and credentials are not allowed.", 'SyntaxError');
+      const list = protocols == null ? [] : (typeof protocols === 'string' ? [protocols] :
+        (protocols && typeof protocols[Symbol.iterator] === 'function' ? Array.from(protocols, String) : [String(protocols)]));
+      const token = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+      const seen = new Set();
+      for (const protocol of list) {
+        if (!token.test(protocol)) throw new DOMException(`Invalid WebSocket subprotocol '${protocol}'.`, 'SyntaxError');
+        if (seen.has(protocol)) throw new DOMException(`Duplicate WebSocket subprotocol '${protocol}'.`, 'SyntaxError');
+        seen.add(protocol);
+      }
+      this._url = parsed.href;
+      this.readyState = WebSocket.CONNECTING;
       this.bufferedAmount = 0;
       this.binaryType = 'blob';
       this.extensions = '';
-      this.protocol = Array.isArray(protocols) ? (protocols[0] || '') : (protocols || '');
+      this.protocol = '';
       this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
+      this._id = undefined;
+      this._terminal = false;
+      this._sendQueue = [];
       _makeListenerBox(this);
-      Promise.resolve().then(() => {
-        if (this.readyState !== 0) return;
-        this.readyState = 1; // OPEN
-        const ev = new Event('open');
-        if (typeof this.onopen === 'function') { try { this.onopen(ev); } catch (e) {} }
-        try { this.dispatchEvent(ev); } catch (e) {}
+      Promise.resolve().then(async () => {
+        try {
+          const opened = JSON.parse(await __obscuraCore.ops.op_ws_open(this._url, JSON.stringify(list)));
+          if (opened.error) { this._fail(); return; }
+          if (this._terminal) {
+            __obscuraCore.ops.op_ws_close(opened.id, 1000, '');
+            this._drainClose(opened.id);
+            return;
+          }
+          this._id = opened.id;
+          this._pump(opened.id);
+        } catch (_) { this._fail(); }
       });
     }
-    send(data) { /* drop; no real socket */ }
+    get url() { return this._url; }
+    async _drainClose(id) {
+      try {
+        while (true) {
+          const event = JSON.parse(await __obscuraCore.ops.op_ws_next_message(id));
+          if (!event || event.kind === 'close') return;
+        }
+      } catch (_) {}
+    }
+    _emit(event) {
+      const handler = this['on' + event.type];
+      if (typeof handler === 'function') { try { handler.call(this, event); } catch (_) {} }
+      try { this.dispatchEvent(event); } catch (_) {}
+    }
+    _fireClose(code, reason, wasClean) {
+      const event = new Event('close');
+      event.code = code; event.reason = reason; event.wasClean = wasClean;
+      this._emit(event);
+    }
+    _fail() {
+      if (this._terminal) return;
+      this._terminal = true; this.readyState = WebSocket.CLOSED; this._id = undefined;
+      this._sendQueue.length = 0;
+      this._emit(new Event('error'));
+      this._fireClose(1006, '', false);
+    }
+    _finish(code, reason) {
+      if (this._terminal) return;
+      this._terminal = true; this.readyState = WebSocket.CLOSED; this._id = undefined;
+      this._sendQueue.length = 0;
+      this._fireClose(code || 1006, reason || '', code !== 1006);
+    }
+    async _pump(id) {
+      while (!this._terminal && this._id === id) {
+        let event;
+        try { event = JSON.parse(await __obscuraCore.ops.op_ws_next_message(id)); }
+        catch (_) { this._fail(); return; }
+        if (!event || !event.kind) { this._fail(); return; }
+        if (event.kind === 'open') {
+          if (this._terminal || this._id !== id) return;
+          this.readyState = WebSocket.OPEN;
+          this.protocol = event.protocol || '';
+          for (const [kind, payload] of this._sendQueue.splice(0)) {
+            if (!__obscuraCore.ops.op_ws_send(id, kind, payload)) {
+              __obscuraCore.ops.op_ws_close(id, 1000, '');
+              this._fail();
+              this._drainClose(id);
+              return;
+            }
+          }
+          this.bufferedAmount = 0;
+          this._emit(new Event('open'));
+        } else if (event.kind === 'message') {
+          let data = event.data;
+          if (event.binary) {
+            const bytes = _base64ToUint8Array(event.data);
+            data = this.binaryType === 'arraybuffer' ? _arrayBufferFromBytes(bytes) : new Blob([bytes]);
+          }
+          this._emit(new MessageEvent('message', { data }));
+        } else if (event.kind === 'error') {
+          this._emit(new Event('error'));
+        } else if (event.kind === 'close') {
+          this._finish(event.code || 1006, event.reason || '');
+          return;
+        }
+      }
+    }
+    send(data) {
+      if (this.readyState >= WebSocket.CLOSING) {
+        throw new DOMException("WebSocket is already in CLOSING or CLOSED state.", 'InvalidStateError');
+      }
+      let kind, payload, size;
+      if (typeof data === 'string') {
+        kind = 'text'; payload = data; size = new TextEncoder().encode(data).length;
+      } else if (data instanceof Blob) {
+        kind = 'binary'; payload = btoa(_bytesToBinaryString(data._bytes)); size = data._bytes.length;
+      } else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        kind = 'binary'; payload = btoa(_bytesToBinaryString(bytes)); size = bytes.length;
+      } else {
+        throw new TypeError("WebSocket.send() accepts a string, Blob, ArrayBuffer, or ArrayBufferView.");
+      }
+      if (this.readyState === WebSocket.CONNECTING) {
+        this._sendQueue.push([kind, payload]);
+        this.bufferedAmount += size;
+      } else if (!__obscuraCore.ops.op_ws_send(this._id, kind, payload)) {
+        const id = this._id;
+        __obscuraCore.ops.op_ws_close(id, 1000, '');
+        this._fail();
+        this._drainClose(id);
+      }
+    }
     close(code, reason) {
-      if (this.readyState >= 2) return;
-      this.readyState = 3; // CLOSED
-      const ev = new Event('close');
-      ev.code = code || 1000; ev.reason = reason || ''; ev.wasClean = true;
-      if (typeof this.onclose === 'function') { try { this.onclose(ev); } catch (e) {} }
-      try { this.dispatchEvent(ev); } catch (e) {}
+      if (this.readyState >= WebSocket.CLOSING) return;
+      const closeCode = code == null ? 1000 : Number(code);
+      if (code != null && (!Number.isInteger(closeCode) || (closeCode !== 1000 && (closeCode < 3000 || closeCode > 4999)))) {
+        throw new DOMException('Invalid WebSocket close code.', 'InvalidAccessError');
+      }
+      const closeReason = reason == null ? '' : String(reason);
+      if (new TextEncoder().encode(closeReason).length > 123) throw new DOMException('WebSocket close reason exceeds 123 bytes.', 'SyntaxError');
+      if (this.readyState === WebSocket.CONNECTING) {
+        this._finish(closeCode, closeReason);
+        return;
+      }
+      __obscuraCore.ops.op_ws_close(this._id, closeCode, closeReason);
+      this.readyState = WebSocket.CLOSING;
     }
     static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
   };
