@@ -5858,8 +5858,8 @@ mod tests {
         rt.run_event_loop_bounded(2_000).await.unwrap();
         server.await.unwrap();
         proxy.await.unwrap();
-        assert_eq!(rt.evaluate("__wsMessages").unwrap(), serde_json::json!(["reply", [1.0, 2.0, 3.0]]));
-        assert_eq!(rt.evaluate("__wsClose").unwrap(), serde_json::json!([1005.0, true]));
+        assert_eq!(rt.evaluate("__wsMessages").unwrap(), serde_json::json!(["reply", [1, 2, 3]]));
+        assert_eq!(rt.evaluate("__wsClose").unwrap(), serde_json::json!([1005, true]));
         assert_eq!(rt.evaluate(r#"(() => {
             try { new WebSocket('ftp://example.com'); return false; }
             catch (error) { return error.name === 'SyntaxError'; }
